@@ -12,6 +12,7 @@ export default function AdminSection({ isActive }) {
   const [description, setDescription] = useState("");
   const [totalCustomers, setTotalCustomers] = useState(0);
   const [totalPoints, setTotalPoints] = useState(0);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const ADMIN_PASSWORD = "Admin!2345";
 
@@ -183,6 +184,17 @@ export default function AdminSection({ isActive }) {
     }
   };
 
+  // Filter customers based on search term
+  const filteredCustomers = Object.values(customers).filter((customer) => {
+    const searchLower = searchTerm.toLowerCase();
+    return (
+      customer.name.toLowerCase().includes(searchLower) ||
+      customer.username.toLowerCase().includes(searchLower) ||
+      (customer.phone && customer.phone.toLowerCase().includes(searchLower)) ||
+      (customer.email && customer.email.toLowerCase().includes(searchLower))
+    );
+  });
+
   if (!isActive) return null;
 
   return (
@@ -209,7 +221,7 @@ export default function AdminSection({ isActive }) {
           <div className="stats-grid">
             <div className="stat-card">
               <div className="stat-value">{totalCustomers}</div>
-              <div>Total Customers</div>
+              <div>Total Players</div>
             </div>
             <div className="stat-card">
               <div className="stat-value">{totalPoints}</div>
@@ -219,12 +231,12 @@ export default function AdminSection({ isActive }) {
 
           <h3>Manage Points</h3>
           <div className="form-group">
-            <label>Select Customer</label>
+            <label>Select Player</label>
             <select
               value={selectedCustomer}
               onChange={(e) => setSelectedCustomer(e.target.value)}
             >
-              <option value="">Choose customer...</option>
+              <option value="">Choose player...</option>
               {Object.values(customers).map((customer) => (
                 <option key={customer.username} value={customer.username}>
                   {customer.name} (@{customer.username})
@@ -265,24 +277,52 @@ export default function AdminSection({ isActive }) {
             Update Points
           </button>
 
-          <h3 style={{ marginTop: "1rem" }}>All Customers</h3>
+          <h3 style={{ marginTop: "1rem" }}>All Players</h3>
+
+          <div className="form-group">
+            <label>Search Player</label>
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search by name, username, phone, or email..."
+            />
+          </div>
+
+          <div
+            style={{ marginBottom: "1rem", color: "#666", fontSize: "14px" }}
+          >
+            Showing {filteredCustomers.length} of{" "}
+            {Object.keys(customers).length} customers
+          </div>
+
           <div>
-            {Object.values(customers).map((customer) => (
-              <div key={customer.username} className="customer-card">
-                <h4>
-                  {customer.name} (@{customer.username})
-                </h4>
-                <p>Phone: {customer.phone || "Not provided"}</p>
-                <p>Email: {customer.email || "Not provided"}</p>
-                <p>
-                  Points: <strong>{customer.points || 0}</strong>
-                </p>
-                <p>
-                  Member since:{" "}
-                  {new Date(customer.createdAt).toLocaleDateString()}
-                </p>
+            {filteredCustomers.length === 0 ? (
+              <div
+                style={{ textAlign: "center", padding: "2rem", color: "#666" }}
+              >
+                {searchTerm
+                  ? "No customers found matching your search."
+                  : "No customers registered yet."}
               </div>
-            ))}
+            ) : (
+              filteredCustomers.map((customer) => (
+                <div key={customer.username} className="customer-card">
+                  <h4>
+                    {customer.name} (@{customer.username})
+                  </h4>
+                  <p>Phone: {customer.phone || "Not provided"}</p>
+                  <p>Email: {customer.email || "Not provided"}</p>
+                  <p>
+                    Points: <strong>{customer.points || 0}</strong>
+                  </p>
+                  <p>
+                    Member since:{" "}
+                    {new Date(customer.createdAt).toLocaleDateString()}
+                  </p>
+                </div>
+              ))
+            )}
           </div>
         </>
       )}

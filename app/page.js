@@ -7,7 +7,7 @@ import AdminSection from "../components/AdminSection";
 import RegisterSection from "../components/RegisterSection";
 
 export default function Home() {
-  const [activeSection, setActiveSection] = useState("customer");
+  const [activeSection, setActiveSection] = useState("admin");
 
   // Prevent page refresh warning
   useEffect(() => {
