@@ -10,21 +10,21 @@ export default function Home() {
   const [activeSection, setActiveSection] = useState("admin");
 
   // Prevent page refresh warning
-  useEffect(() => {
-    const handleBeforeUnload = (event) => {
-      const message =
-        "Are you sure you want to leave? Your changes may not be saved.";
-      event.preventDefault();
-      event.returnValue = message;
-      return message;
-    };
+  // useEffect(() => {
+  //   const handleBeforeUnload = (event) => {
+  //     const message =
+  //       "Are you sure you want to leave? Your changes may not be saved.";
+  //     event.preventDefault();
+  //     event.returnValue = message;
+  //     return message;
+  //   };
 
-    window.addEventListener("beforeunload", handleBeforeUnload);
+  //   window.addEventListener("beforeunload", handleBeforeUnload);
 
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-    };
-  }, []);
+  //   return () => {
+  //     window.removeEventListener("beforeunload", handleBeforeUnload);
+  //   };
+  // }, []);
 
   const handleSectionChange = (section) => {
     setActiveSection(section);
