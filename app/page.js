@@ -39,7 +39,7 @@ export default function Home() {
           style={{ height: "160px", marginBottom: "0px" }}
         />
         <h1>Aeros Gaming Hub</h1>
-        <h1>Points Rewards</h1>
+        <h1>Admin Portal</h1>
       </div>
 
       <Navigation
