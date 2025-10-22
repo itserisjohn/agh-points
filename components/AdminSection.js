@@ -15,11 +15,17 @@ export default function AdminSection({ isActive }) {
   const [points, setPoints] = useState("");
   const [action, setAction] = useState("add");
   const [description, setDescription] = useState("");
+  const [isDescriptionManuallyEdited, setIsDescriptionManuallyEdited] =
+    useState(false);
   const [totalCustomers, setTotalCustomers] = useState(0);
   const [totalPoints, setTotalPoints] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState("dashboard");
   const [sessionSearchTerm, setSessionSearchTerm] = useState("");
+  const [errorLogs, setErrorLogs] = useState({});
+  const [errorSearchTerm, setErrorSearchTerm] = useState("");
+  const [errorTypeFilter, setErrorTypeFilter] = useState("all");
+  const [severityFilter, setSeverityFilter] = useState("all");
 
   const ADMIN_PASSWORD = "Admin!2345";
 
@@ -28,6 +34,7 @@ export default function AdminSection({ isActive }) {
     customers: {},
     transactions: {},
     activeSessions: {},
+    errorLogs: {},
   });
 
   const showAlert = (message, type) => {
@@ -143,6 +150,20 @@ export default function AdminSection({ isActive }) {
     }
   };
 
+  const getErrorLogs = async () => {
+    if (isDemoMode) {
+      return demoData.errorLogs || {};
+    }
+
+    try {
+      const snapshot = await get(child(ref(database), "errorLogs"));
+      return snapshot.exists() ? snapshot.val() : {};
+    } catch (error) {
+      console.error("Error getting error logs:", error);
+      return {};
+    }
+  };
+
   const getCustomer = async (username) => {
     if (isDemoMode) {
       return demoData.customers[username] || null;
@@ -234,6 +255,7 @@ export default function AdminSection({ isActive }) {
       setTotalPoints(pointsSum);
 
       await loadActiveSessions();
+      await loadErrorLogs();
     } catch (error) {
       showAlert("Error loading admin data: " + error.message, "error");
     }
@@ -245,6 +267,15 @@ export default function AdminSection({ isActive }) {
       setActiveSessions(sessionsData);
     } catch (error) {
       showAlert("Error loading active sessions: " + error.message, "error");
+    }
+  };
+
+  const loadErrorLogs = async () => {
+    try {
+      const logsData = await getErrorLogs();
+      setErrorLogs(logsData);
+    } catch (error) {
+      showAlert("Error loading error logs: " + error.message, "error");
     }
   };
 
@@ -304,6 +335,7 @@ export default function AdminSection({ isActive }) {
       // Clear form
       setPoints("");
       setDescription("");
+      setIsDescriptionManuallyEdited(false);
 
       // Reload admin data
       await loadAdminData();
@@ -311,6 +343,29 @@ export default function AdminSection({ isActive }) {
       showAlert("Error updating points: " + error.message, "error");
     }
   };
+
+  // Auto-populate description based on points value
+  useEffect(() => {
+    if (!isDescriptionManuallyEdited && points && parseInt(points) > 0) {
+      const pointsAmount = parseInt(points);
+      let autoDescription = "";
+
+      if (action === "redeem") {
+        // For redeem action with points divisible by 10
+        if (pointsAmount % 10 === 0) {
+          const hours = pointsAmount / 10;
+          autoDescription = `Minus ${pointsAmount} points (${hours} hour${
+            hours > 1 ? "s" : ""
+          } free redeemed)`;
+        } else {
+          // For non-10s values
+          autoDescription = `Minus ${pointsAmount} points (earned points during free hour)`;
+        }
+      }
+
+      setDescription(autoDescription);
+    }
+  }, [points, action, isDescriptionManuallyEdited]);
 
   // Check for existing admin session on mount
   useEffect(() => {
@@ -358,6 +413,36 @@ export default function AdminSection({ isActive }) {
     }
   );
 
+  // Get unique error types and severities for filters
+  const errorTypes = [
+    ...new Set(Object.values(errorLogs).map((log) => log.errorType)),
+  ];
+  const severities = [
+    ...new Set(Object.values(errorLogs).map((log) => log.severity)),
+  ];
+
+  // Filter error logs
+  const filteredErrorLogs = Object.entries(errorLogs)
+    .filter(([id, log]) => {
+      const searchLower = errorSearchTerm.toLowerCase();
+      const matchesSearch =
+        log.username?.toLowerCase().includes(searchLower) ||
+        log.errorType?.toLowerCase().includes(searchLower) ||
+        log.message?.toLowerCase().includes(searchLower) ||
+        id.toLowerCase().includes(searchLower);
+
+      const matchesType =
+        errorTypeFilter === "all" || log.errorType === errorTypeFilter;
+      const matchesSeverity =
+        severityFilter === "all" || log.severity === severityFilter;
+
+      return matchesSearch && matchesType && matchesSeverity;
+    })
+    .sort((a, b) => {
+      // Sort by timestamp, newest first
+      return new Date(b[1].timestamp) - new Date(a[1].timestamp);
+    });
+
   const formatDuration = (startTime) => {
     const duration = Date.now() - startTime;
     const hours = Math.floor(duration / (1000 * 60 * 60));
@@ -366,7 +451,7 @@ export default function AdminSection({ isActive }) {
   };
 
   const isSessionActive = (lastHeartbeat) => {
-    return Date.now() - lastHeartbeat < 60000; // Active if heartbeat within last minute
+    return Date.now() - lastHeartbeat < 720000; // Active if heartbeat within last 12 minutes
   };
 
   if (!isActive) return null;
@@ -484,6 +569,12 @@ export default function AdminSection({ isActive }) {
             >
               Sessions
             </button>
+            <button
+              className={`tab-button ${activeTab === "errors" ? "active" : ""}`}
+              onClick={() => setActiveTab("errors")}
+            >
+              Error Logs
+            </button>
           </div>
 
           <div className="tab-content">
@@ -503,6 +594,12 @@ export default function AdminSection({ isActive }) {
                       {Object.keys(activeSessions).length}
                     </div>
                     <div className="stat-label">Active Sessions</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-value">
+                      {Object.keys(errorLogs).length}
+                    </div>
+                    <div className="stat-label">Error Logs</div>
                   </div>
                 </div>
               </>
@@ -551,7 +648,10 @@ export default function AdminSection({ isActive }) {
                     type="number"
                     className="form-input"
                     value={points}
-                    onChange={(e) => setPoints(e.target.value)}
+                    onChange={(e) => {
+                      setPoints(e.target.value);
+                      setIsDescriptionManuallyEdited(false);
+                    }}
                     placeholder="Enter points amount"
                   />
                 </div>
@@ -562,7 +662,10 @@ export default function AdminSection({ isActive }) {
                     type="text"
                     className="form-input"
                     value={description}
-                    onChange={(e) => setDescription(e.target.value)}
+                    onChange={(e) => {
+                      setDescription(e.target.value);
+                      setIsDescriptionManuallyEdited(true);
+                    }}
                     placeholder="e.g., Internet usage, Free time reward"
                   />
                 </div>
@@ -719,6 +822,296 @@ export default function AdminSection({ isActive }) {
                       </div>
                     );
                   })
+                )}
+              </>
+            )}
+
+            {activeTab === "errors" && (
+              <>
+                <div className="section-header">
+                  <h3>Error Logs</h3>
+                  <button className="btn btn-small" onClick={loadErrorLogs}>
+                    Refresh
+                  </button>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Error Type</label>
+                    <select
+                      className="form-input form-select"
+                      value={errorTypeFilter}
+                      onChange={(e) => setErrorTypeFilter(e.target.value)}
+                    >
+                      <option value="all">All Types</option>
+                      {errorTypes.map((type) => (
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>Severity</label>
+                    <select
+                      className="form-input form-select"
+                      value={severityFilter}
+                      onChange={(e) => setSeverityFilter(e.target.value)}
+                    >
+                      <option value="all">All Severities</option>
+                      {severities.map((severity) => (
+                        <option key={severity} value={severity}>
+                          {severity}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="search-box" style={{ paddingTop: 15 }}>
+                  <span className="search-icon">🔍</span>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={errorSearchTerm}
+                    onChange={(e) => setErrorSearchTerm(e.target.value)}
+                    placeholder="Search by username, error type, message, or ID..."
+                  />
+                </div>
+
+                <div className="results-count">
+                  Showing {filteredErrorLogs.length} of{" "}
+                  {Object.keys(errorLogs).length} error logs
+                </div>
+
+                {filteredErrorLogs.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-state-icon">📋</div>
+                    <p>
+                      {errorSearchTerm ||
+                      errorTypeFilter !== "all" ||
+                      severityFilter !== "all"
+                        ? "No error logs found matching your filters."
+                        : "No error logs recorded yet."}
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table
+                      style={{
+                        width: "100%",
+                        borderCollapse: "collapse",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <thead>
+                        <tr
+                          style={{
+                            borderBottom: "2px solid #e2e8f0",
+                            textAlign: "left",
+                          }}
+                        >
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Timestamp
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Username
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Error Type
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Severity
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Message
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Details
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredErrorLogs.map(([id, log]) => {
+                          const severityColor =
+                            log.severity === "error"
+                              ? "#e53e3e"
+                              : log.severity === "warning"
+                              ? "#d69e2e"
+                              : "#38a169";
+
+                          return (
+                            <tr
+                              key={id}
+                              style={{
+                                borderBottom: "1px solid #e2e8f0",
+                              }}
+                            >
+                              <td
+                                style={{
+                                  padding: "12px 8px",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {new Date(log.timestamp).toLocaleString()}
+                              </td>
+                              <td style={{ padding: "12px 8px" }}>
+                                <span style={{ color: "#667eea" }}>
+                                  {log.username || "N/A"}
+                                </span>
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 8px",
+                                  fontFamily: "monospace",
+                                  fontSize: "12px",
+                                }}
+                              >
+                                {log.errorType}
+                              </td>
+                              <td style={{ padding: "12px 8px" }}>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    padding: "2px 8px",
+                                    borderRadius: "12px",
+                                    fontSize: "11px",
+                                    fontWeight: 600,
+                                    backgroundColor: `${severityColor}20`,
+                                    color: severityColor,
+                                  }}
+                                >
+                                  {log.severity?.toUpperCase()}
+                                </span>
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 8px",
+                                  maxWidth: "300px",
+                                }}
+                              >
+                                {log.message || "No message"}
+                              </td>
+                              <td style={{ padding: "12px 8px" }}>
+                                <details>
+                                  <summary
+                                    style={{
+                                      cursor: "pointer",
+                                      color: "#667eea",
+                                      fontSize: "12px",
+                                    }}
+                                  >
+                                    View Details
+                                  </summary>
+                                  <div
+                                    style={{
+                                      marginTop: "8px",
+                                      padding: "8px",
+                                      backgroundColor: "#f7fafc",
+                                      borderRadius: "4px",
+                                      fontSize: "11px",
+                                      fontFamily: "monospace",
+                                      maxWidth: "400px",
+                                      wordBreak: "break-all",
+                                    }}
+                                  >
+                                    <div>
+                                      <strong>ID:</strong> {id}
+                                    </div>
+                                    {log.sessionId && (
+                                      <div>
+                                        <strong>Session ID:</strong>{" "}
+                                        {log.sessionId}
+                                      </div>
+                                    )}
+                                    {log.tabId && (
+                                      <div>
+                                        <strong>Tab ID:</strong> {log.tabId}
+                                      </div>
+                                    )}
+                                    {log.calculatedPoints !== undefined && (
+                                      <div>
+                                        <strong>Calculated Points:</strong>{" "}
+                                        {log.calculatedPoints}
+                                      </div>
+                                    )}
+                                    {log.storedPoints !== undefined && (
+                                      <div>
+                                        <strong>Stored Points:</strong>{" "}
+                                        {log.storedPoints}
+                                      </div>
+                                    )}
+                                    {log.sessionAge !== undefined && (
+                                      <div>
+                                        <strong>Session Age:</strong>{" "}
+                                        {log.sessionAge}h
+                                      </div>
+                                    )}
+                                    {log.attempt && (
+                                      <div>
+                                        <strong>Attempt:</strong> {log.attempt}
+                                        {log.maxRetries &&
+                                          ` / ${log.maxRetries}`}
+                                      </div>
+                                    )}
+                                    {log.actualPoints !== undefined && (
+                                      <div>
+                                        <strong>Actual Points:</strong>{" "}
+                                        {log.actualPoints}
+                                      </div>
+                                    )}
+                                    {log.expectedPoints !== undefined && (
+                                      <div>
+                                        <strong>Expected Points:</strong>{" "}
+                                        {log.expectedPoints}
+                                      </div>
+                                    )}
+                                    {log.pointsAdded !== undefined && (
+                                      <div>
+                                        <strong>Points Added:</strong>{" "}
+                                        {log.pointsAdded}
+                                      </div>
+                                    )}
+                                    {log.timeSinceHeartbeat !== undefined && (
+                                      <div>
+                                        <strong>Time Since Heartbeat:</strong>{" "}
+                                        {log.timeSinceHeartbeat}s
+                                      </div>
+                                    )}
+                                    {log.userAgent && (
+                                      <div>
+                                        <strong>User Agent:</strong>{" "}
+                                        {log.userAgent.substring(0, 100)}...
+                                      </div>
+                                    )}
+                                    {log.url && (
+                                      <div>
+                                        <strong>URL:</strong> {log.url}
+                                      </div>
+                                    )}
+                                    {log.stack && (
+                                      <div style={{ marginTop: "8px" }}>
+                                        <strong>Stack Trace:</strong>
+                                        <pre
+                                          style={{
+                                            fontSize: "10px",
+                                            whiteSpace: "pre-wrap",
+                                            marginTop: "4px",
+                                          }}
+                                        >
+                                          {log.stack}
+                                        </pre>
+                                      </div>
+                                    )}
+                                  </div>
+                                </details>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </>
             )}

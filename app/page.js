@@ -2,9 +2,8 @@
 
 import { useState, useEffect } from "react";
 import Navigation from "../components/Navigation";
-import CustomerSection from "../components/CustomerSection";
 import AdminSection from "../components/AdminSection";
-import RegisterSection from "../components/RegisterSection";
+import Image from "next/image";
 
 export default function Home() {
   const [activeSection, setActiveSection] = useState("admin");
@@ -33,10 +32,13 @@ export default function Home() {
   return (
     <div className="container">
       <div className="header">
-        <img
+        <Image
           src="/agh-logo.png"
           alt="Aeros Gaming Hub Logo"
-          style={{ height: "160px", marginBottom: "0px" }}
+          width={180}
+          height={160}
+          style={{ marginBottom: "0px" }}
+          priority
         />
         <h1>Aeros Gaming Hub</h1>
         <h1>Admin Portal</h1>
@@ -48,9 +50,7 @@ export default function Home() {
       />
 
       <div className="content">
-        <CustomerSection isActive={activeSection === "customer"} />
         <AdminSection isActive={activeSection === "admin"} />
-        <RegisterSection isActive={activeSection === "register"} />
       </div>
     </div>
   );
