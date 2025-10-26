@@ -26,6 +26,10 @@ export default function AdminSection({ isActive }) {
   const [errorSearchTerm, setErrorSearchTerm] = useState("");
   const [errorTypeFilter, setErrorTypeFilter] = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
+  const [transactions, setTransactions] = useState({});
+  const [transactionSearchTerm, setTransactionSearchTerm] = useState("");
+  const [transactionTypeFilter, setTransactionTypeFilter] = useState("all");
+  const [playerSearchTerm, setPlayerSearchTerm] = useState("");
 
   const ADMIN_PASSWORD = "Admin!2345";
 
@@ -164,6 +168,20 @@ export default function AdminSection({ isActive }) {
     }
   };
 
+  const getAllTransactions = async () => {
+    if (isDemoMode) {
+      return demoData.transactions || {};
+    }
+
+    try {
+      const snapshot = await get(child(ref(database), "transactions"));
+      return snapshot.exists() ? snapshot.val() : {};
+    } catch (error) {
+      console.error("Error getting transactions:", error);
+      return {};
+    }
+  };
+
   const getCustomer = async (username) => {
     if (isDemoMode) {
       return demoData.customers[username] || null;
@@ -256,6 +274,7 @@ export default function AdminSection({ isActive }) {
 
       await loadActiveSessions();
       await loadErrorLogs();
+      await loadTransactions();
     } catch (error) {
       showAlert("Error loading admin data: " + error.message, "error");
     }
@@ -276,6 +295,15 @@ export default function AdminSection({ isActive }) {
       setErrorLogs(logsData);
     } catch (error) {
       showAlert("Error loading error logs: " + error.message, "error");
+    }
+  };
+
+  const loadTransactions = async () => {
+    try {
+      const transactionsData = await getAllTransactions();
+      setTransactions(transactionsData);
+    } catch (error) {
+      showAlert("Error loading transactions: " + error.message, "error");
     }
   };
 
@@ -307,10 +335,10 @@ export default function AdminSection({ isActive }) {
         newPoints += pointsAmount;
       } else {
         // redeem
-        if (newPoints < pointsAmount) {
-          showAlert("Customer doesn't have enough points", "error");
-          return;
-        }
+        // if (newPoints < pointsAmount) {
+        //   showAlert("Customer doesn't have enough points", "error");
+        //   return;
+        // }
         newPoints -= pointsAmount;
       }
 
@@ -336,6 +364,8 @@ export default function AdminSection({ isActive }) {
       setPoints("");
       setDescription("");
       setIsDescriptionManuallyEdited(false);
+      setSelectedCustomer("");
+      setPlayerSearchTerm("");
 
       // Reload admin data
       await loadAdminData();
@@ -401,6 +431,17 @@ export default function AdminSection({ isActive }) {
     );
   });
 
+  // Filter customers for player select dropdown
+  const filteredPlayersForSelect = Object.values(customers).filter(
+    (customer) => {
+      const searchLower = playerSearchTerm.toLowerCase();
+      return (
+        customer.name.toLowerCase().includes(searchLower) ||
+        customer.username.toLowerCase().includes(searchLower)
+      );
+    }
+  );
+
   // Filter active sessions
   const filteredSessions = Object.entries(activeSessions).filter(
     ([username, session]) => {
@@ -441,6 +482,34 @@ export default function AdminSection({ isActive }) {
     .sort((a, b) => {
       // Sort by timestamp, newest first
       return new Date(b[1].timestamp) - new Date(a[1].timestamp);
+    });
+
+  // Filter transactions - flatten all customer transactions into single array
+  const allTransactions = [];
+  Object.entries(transactions).forEach(([username, userTransactions]) => {
+    Object.entries(userTransactions).forEach(([id, transaction]) => {
+      allTransactions.push({ id, ...transaction });
+    });
+  });
+
+  const filteredTransactions = allTransactions
+    .filter((transaction) => {
+      const searchLower = transactionSearchTerm.toLowerCase();
+      const customer = customers[transaction.customerUsername];
+      const matchesSearch =
+        transaction.customerUsername?.toLowerCase().includes(searchLower) ||
+        customer?.name?.toLowerCase().includes(searchLower) ||
+        transaction.description?.toLowerCase().includes(searchLower);
+
+      const matchesType =
+        transactionTypeFilter === "all" ||
+        transaction.type === transactionTypeFilter;
+
+      return matchesSearch && matchesType;
+    })
+    .sort((a, b) => {
+      // Sort by timestamp, newest first
+      return new Date(b.timestamp) - new Date(a.timestamp);
     });
 
   const formatDuration = (startTime) => {
@@ -563,6 +632,14 @@ export default function AdminSection({ isActive }) {
             </button>
             <button
               className={`tab-button ${
+                activeTab === "transactions" ? "active" : ""
+              }`}
+              onClick={() => setActiveTab("transactions")}
+            >
+              Transactions
+            </button>
+            <button
+              className={`tab-button ${
                 activeTab === "sessions" ? "active" : ""
               }`}
               onClick={() => setActiveTab("sessions")}
@@ -613,21 +690,91 @@ export default function AdminSection({ isActive }) {
                 <div className="form-row">
                   <div className="form-group">
                     <label>Select Player</label>
-                    <select
-                      className="form-input form-select"
-                      value={selectedCustomer}
-                      onChange={(e) => setSelectedCustomer(e.target.value)}
-                    >
-                      <option value="">Choose player...</option>
-                      {Object.values(customers).map((customer) => (
-                        <option
-                          key={customer.username}
-                          value={customer.username}
+                    <div style={{ position: "relative" }}>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={
+                          selectedCustomer
+                            ? customers[selectedCustomer]?.name +
+                              " (@" +
+                              selectedCustomer +
+                              ")"
+                            : playerSearchTerm
+                        }
+                        onChange={(e) => {
+                          setPlayerSearchTerm(e.target.value);
+                          setSelectedCustomer("");
+                        }}
+                        placeholder="Search for a player..."
+                        onFocus={() => setPlayerSearchTerm("")}
+                      />
+                      {playerSearchTerm && !selectedCustomer && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: "100%",
+                            left: 0,
+                            right: 0,
+                            maxHeight: "200px",
+                            overflowY: "auto",
+                            backgroundColor: "white",
+                            border: "1px solid #e2e8f0",
+                            borderRadius: "8px",
+                            marginTop: "4px",
+                            zIndex: 1000,
+                            boxShadow: "0 4px 6px rgba(0,0,0,0.1)",
+                          }}
                         >
-                          {customer.name} (@{customer.username})
-                        </option>
-                      ))}
-                    </select>
+                          {filteredPlayersForSelect.length > 0 ? (
+                            filteredPlayersForSelect.map((customer) => (
+                              <div
+                                key={customer.username}
+                                style={{
+                                  padding: "10px 12px",
+                                  cursor: "pointer",
+                                  borderBottom: "1px solid #f7fafc",
+                                  transition: "background-color 0.2s",
+                                }}
+                                onMouseEnter={(e) =>
+                                  (e.target.style.backgroundColor = "#f7fafc")
+                                }
+                                onMouseLeave={(e) =>
+                                  (e.target.style.backgroundColor = "white")
+                                }
+                                onClick={() => {
+                                  setSelectedCustomer(customer.username);
+                                  setPlayerSearchTerm("");
+                                }}
+                              >
+                                <div style={{ fontWeight: 500 }}>
+                                  {customer.name}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    color: "#667eea",
+                                  }}
+                                >
+                                  @{customer.username} • {customer.points || 0}{" "}
+                                  points
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div
+                              style={{
+                                padding: "12px",
+                                textAlign: "center",
+                                color: "#a0aec0",
+                              }}
+                            >
+                              No players found
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="form-group">
                     <label>Action</label>
@@ -732,6 +879,168 @@ export default function AdminSection({ isActive }) {
                       </div>
                     </div>
                   ))
+                )}
+              </>
+            )}
+
+            {activeTab === "transactions" && (
+              <>
+                <div className="section-header">
+                  <h3>All Transactions</h3>
+                  <button className="btn btn-small" onClick={loadTransactions}>
+                    Refresh
+                  </button>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Transaction Type</label>
+                    <select
+                      className="form-input form-select"
+                      value={transactionTypeFilter}
+                      onChange={(e) => setTransactionTypeFilter(e.target.value)}
+                    >
+                      <option value="all">All Types</option>
+                      <option value="add">Add Points</option>
+                      <option value="redeem">Redeem Points</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="search-box" style={{ paddingTop: 15 }}>
+                  <span className="search-icon">🔍</span>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={transactionSearchTerm}
+                    onChange={(e) => setTransactionSearchTerm(e.target.value)}
+                    placeholder="Search by username, name, or description..."
+                  />
+                </div>
+
+                <div className="results-count">
+                  Showing {filteredTransactions.length} of{" "}
+                  {allTransactions.length} transactions
+                </div>
+
+                {filteredTransactions.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-state-icon">💳</div>
+                    <p>
+                      {transactionSearchTerm || transactionTypeFilter !== "all"
+                        ? "No transactions found matching your filters."
+                        : "No transactions recorded yet."}
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table
+                      style={{
+                        width: "100%",
+                        borderCollapse: "collapse",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <thead>
+                        <tr
+                          style={{
+                            borderBottom: "2px solid #e2e8f0",
+                            textAlign: "left",
+                          }}
+                        >
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Timestamp
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Player
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Type
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Points
+                          </th>
+                          <th style={{ padding: "12px 8px", fontWeight: 600 }}>
+                            Description
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredTransactions.map((transaction) => {
+                          const customer =
+                            customers[transaction.customerUsername];
+                          const typeColor =
+                            transaction.type === "add" ? "#38a169" : "#e53e3e";
+
+                          return (
+                            <tr
+                              key={transaction.id}
+                              style={{
+                                borderBottom: "1px solid #e2e8f0",
+                              }}
+                            >
+                              <td
+                                style={{
+                                  padding: "12px 8px",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {new Date(
+                                  transaction.timestamp
+                                ).toLocaleString()}
+                              </td>
+                              <td style={{ padding: "12px 8px" }}>
+                                <div style={{ fontWeight: 500 }}>
+                                  {customer?.name || "Unknown"}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    color: "#667eea",
+                                  }}
+                                >
+                                  @{transaction.customerUsername}
+                                </div>
+                              </td>
+                              <td style={{ padding: "12px 8px" }}>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    padding: "2px 8px",
+                                    borderRadius: "12px",
+                                    fontSize: "11px",
+                                    fontWeight: 600,
+                                    backgroundColor: `${typeColor}20`,
+                                    color: typeColor,
+                                  }}
+                                >
+                                  {transaction.type?.toUpperCase()}
+                                </span>
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 8px",
+                                  fontWeight: 600,
+                                  color: typeColor,
+                                }}
+                              >
+                                {transaction.type === "add" ? "+" : "-"}
+                                {transaction.points}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "12px 8px",
+                                  maxWidth: "300px",
+                                }}
+                              >
+                                {transaction.description || "No description"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </>
             )}
