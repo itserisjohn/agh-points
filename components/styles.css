@@ -119,6 +119,15 @@
   border-bottom: 2px solid #e2e8f0;
 }
 
+@media (max-width: 480px) {
+  .tab-navigation {
+    overflow-y: scroll;
+  }
+  .form-group {
+    padding-top: 10px !important;
+  }
+}
+
 .tab-button {
   flex: 1;
   min-width: 120px;
@@ -288,6 +297,15 @@
   position: absolute;
   left: 12px;
   top: 50%;
+  transform: translateY(-50%);
+  color: #a0aec0;
+  z-index: 2;
+}
+
+.search-icon2 {
+  position: absolute;
+  left: 12px;
+  top: 65%;
   transform: translateY(-50%);
   color: #a0aec0;
   z-index: 2;

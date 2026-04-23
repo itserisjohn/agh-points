@@ -1,5 +1,14 @@
-import { useState, useEffect } from "react";
-import { ref, get, child, update, push, remove } from "firebase/database";
+import { useState, useEffect, useRef } from "react";
+import {
+  ref,
+  get,
+  child,
+  update,
+  push,
+  remove,
+  query,
+  limitToLast,
+} from "firebase/database";
 import { signInAnonymously, onAuthStateChanged, getAuth } from "firebase/auth";
 import { database, isDemoMode } from "../lib/firebase";
 import "./styles.css";
@@ -30,6 +39,26 @@ export default function AdminSection({ isActive }) {
   const [transactionSearchTerm, setTransactionSearchTerm] = useState("");
   const [transactionTypeFilter, setTransactionTypeFilter] = useState("all");
   const [playerSearchTerm, setPlayerSearchTerm] = useState("");
+
+  const authUnsubscribeRef = useRef(null);
+  const isInitializingAuthRef = useRef(false);
+  const initializeFirebaseAuthRef = useRef(null);
+  const loadActiveSessionsRef = useRef(null);
+  const loadErrorLogsRef = useRef(null);
+  const loadTransactionsRef = useRef(null);
+  const dataCacheRef = useRef({
+    customers: { timestamp: 0, data: null, promise: null },
+    activeSessions: { timestamp: 0, data: null, promise: null },
+    errorLogs: { timestamp: 0, data: null, promise: null },
+    transactions: { timestamp: 0, data: null, promise: null },
+  });
+
+  const CACHE_TTL_MS = {
+    customers: 5 * 60 * 1000,
+    activeSessions: 2 * 60 * 1000,
+    errorLogs: 5 * 60 * 1000,
+    transactions: 5 * 60 * 1000,
+  };
 
   const ADMIN_PASSWORD = "Admin!2345";
 
@@ -76,6 +105,11 @@ export default function AdminSection({ isActive }) {
 
   // Admin logout function
   const adminLogout = () => {
+    if (authUnsubscribeRef.current) {
+      authUnsubscribeRef.current();
+      authUnsubscribeRef.current = null;
+    }
+
     sessionStorage.removeItem("isAdminLoggedIn");
     setIsAdminLoggedIn(false);
     setUser(null);
@@ -94,11 +128,17 @@ export default function AdminSection({ isActive }) {
         return;
       }
 
+      if (authUnsubscribeRef.current || isInitializingAuthRef.current) {
+        return;
+      }
+
+      isInitializingAuthRef.current = true;
+
       // Get auth instance
       const auth = getAuth();
 
       // Set up auth state listener
-      const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      authUnsubscribeRef.current = onAuthStateChanged(auth, async (user) => {
         if (user) {
           setUser(user);
           setIsAuthLoading(false);
@@ -106,10 +146,7 @@ export default function AdminSection({ isActive }) {
         } else {
           // Sign in anonymously if no user
           try {
-            const result = await signInAnonymously(auth);
-            setUser(result.user);
-            setIsAuthLoading(false);
-            await loadAdminData();
+            await signInAnonymously(auth);
           } catch (error) {
             console.error("Error signing in anonymously:", error);
             showAlert("Failed to initialize authentication", "error");
@@ -118,64 +155,130 @@ export default function AdminSection({ isActive }) {
         }
       });
 
-      return unsubscribe;
+      isInitializingAuthRef.current = false;
     } catch (error) {
       console.error("Error initializing Firebase auth:", error);
       showAlert("Failed to initialize authentication", "error");
       setIsAuthLoading(false);
+      isInitializingAuthRef.current = false;
     }
   };
 
-  const getAllCustomers = async () => {
+  const invalidateCache = (...keys) => {
+    keys.forEach((key) => {
+      if (!dataCacheRef.current[key]) {
+        return;
+      }
+
+      dataCacheRef.current[key].timestamp = 0;
+      dataCacheRef.current[key].data = null;
+      dataCacheRef.current[key].promise = null;
+    });
+  };
+
+  const readWithCache = async (cacheKey, fetcher, forceRefresh = false) => {
+    const cacheEntry = dataCacheRef.current[cacheKey];
+    const ttl = CACHE_TTL_MS[cacheKey] || 0;
+    const isFresh =
+      !forceRefresh &&
+      cacheEntry.data !== null &&
+      Date.now() - cacheEntry.timestamp < ttl;
+
+    if (isFresh) {
+      return cacheEntry.data;
+    }
+
+    if (cacheEntry.promise && !forceRefresh) {
+      return cacheEntry.promise;
+    }
+
+    cacheEntry.promise = (async () => {
+      const data = await fetcher();
+      cacheEntry.data = data;
+      cacheEntry.timestamp = Date.now();
+      return data;
+    })().finally(() => {
+      cacheEntry.promise = null;
+    });
+
+    return cacheEntry.promise;
+  };
+
+  const getAllCustomers = async (forceRefresh = false) => {
     if (isDemoMode) {
       return demoData.customers;
     }
 
     try {
-      const snapshot = await get(child(ref(database), "customers"));
-      return snapshot.exists() ? snapshot.val() : {};
+      return await readWithCache(
+        "customers",
+        async () => {
+          const snapshot = await get(child(ref(database), "customers"));
+          return snapshot.exists() ? snapshot.val() : {};
+        },
+        forceRefresh,
+      );
     } catch (error) {
       console.error("Error getting customers:", error);
       return {};
     }
   };
 
-  const getActiveSessions = async () => {
+  const getActiveSessions = async (forceRefresh = false) => {
     if (isDemoMode) {
       return demoData.activeSessions;
     }
 
     try {
-      const snapshot = await get(child(ref(database), "activeSessions"));
-      return snapshot.exists() ? snapshot.val() : {};
+      return await readWithCache(
+        "activeSessions",
+        async () => {
+          const snapshot = await get(child(ref(database), "activeSessions"));
+          return snapshot.exists() ? snapshot.val() : {};
+        },
+        forceRefresh,
+      );
     } catch (error) {
       console.error("Error getting active sessions:", error);
       return {};
     }
   };
 
-  const getErrorLogs = async () => {
+  const getErrorLogs = async (forceRefresh = false) => {
     if (isDemoMode) {
       return demoData.errorLogs || {};
     }
 
     try {
-      const snapshot = await get(child(ref(database), "errorLogs"));
-      return snapshot.exists() ? snapshot.val() : {};
+      return await readWithCache(
+        "errorLogs",
+        async () => {
+          const logsQuery = query(ref(database, "errorLogs"), limitToLast(300));
+          const snapshot = await get(logsQuery);
+          return snapshot.exists() ? snapshot.val() : {};
+        },
+        forceRefresh,
+      );
     } catch (error) {
       console.error("Error getting error logs:", error);
       return {};
     }
   };
 
-  const getAllTransactions = async () => {
+  const getAllTransactions = async (forceRefresh = false) => {
     if (isDemoMode) {
       return demoData.transactions || {};
     }
 
     try {
-      const snapshot = await get(child(ref(database), "transactions"));
-      return snapshot.exists() ? snapshot.val() : {};
+      return await readWithCache(
+        "transactions",
+        async () => {
+          const snapshot = await get(child(ref(database), "transactions"));
+          return snapshot.exists() ? snapshot.val() : {};
+        },
+        forceRefresh,
+      );
     } catch (error) {
       console.error("Error getting transactions:", error);
       return {};
@@ -196,44 +299,43 @@ export default function AdminSection({ isActive }) {
     }
   };
 
-  const updateCustomerPoints = async (username, points) => {
+  const applyPointsAndTransaction = async (
+    username,
+    newPoints,
+    transaction,
+  ) => {
     if (isDemoMode) {
+      const id = Date.now().toString();
       setDemoData((prev) => ({
         ...prev,
         customers: {
           ...prev.customers,
           [username]: {
             ...prev.customers[username],
-            points,
+            points: newPoints,
           },
         },
-      }));
-      return;
-    }
-
-    await update(ref(database, `customers/${username}`), { points });
-  };
-
-  const addTransaction = async (transaction) => {
-    if (isDemoMode) {
-      const id = Date.now().toString();
-      setDemoData((prev) => ({
-        ...prev,
         transactions: {
           ...prev.transactions,
-          [transaction.customerUsername]: {
-            ...prev.transactions[transaction.customerUsername],
+          [username]: {
+            ...prev.transactions[username],
             [id]: transaction,
           },
         },
       }));
-      return;
+      return id;
     }
 
-    await push(
-      ref(database, `transactions/${transaction.customerUsername}`),
-      transaction
-    );
+    // Single multi-path update reduces write requests and keeps data atomic.
+    const transactionRef = push(ref(database, `transactions/${username}`));
+    const updates = {
+      [`customers/${username}/points`]: newPoints,
+      [`transactions/${username}/${transactionRef.key}`]: transaction,
+    };
+
+    await update(ref(database), updates);
+    invalidateCache("customers", "transactions");
+    return transactionRef.key;
   };
 
   const stopSession = async (username) => {
@@ -250,16 +352,21 @@ export default function AdminSection({ isActive }) {
 
     try {
       await remove(ref(database, `activeSessions/${username}`));
+      invalidateCache("activeSessions");
+      setActiveSessions((prev) => {
+        const updated = { ...prev };
+        delete updated[username];
+        return updated;
+      });
       showAlert(`Session stopped for ${username}`, "success");
-      await loadActiveSessions();
     } catch (error) {
       showAlert("Error stopping session: " + error.message, "error");
     }
   };
 
-  const loadAdminData = async () => {
+  const loadAdminData = async (forceRefresh = false) => {
     try {
-      const customersData = await getAllCustomers();
+      const customersData = await getAllCustomers(forceRefresh);
       setCustomers(customersData);
 
       // Update stats
@@ -272,35 +379,33 @@ export default function AdminSection({ isActive }) {
       });
       setTotalPoints(pointsSum);
 
-      await loadActiveSessions();
-      await loadErrorLogs();
-      await loadTransactions();
+      await loadActiveSessions(forceRefresh);
     } catch (error) {
       showAlert("Error loading admin data: " + error.message, "error");
     }
   };
 
-  const loadActiveSessions = async () => {
+  const loadActiveSessions = async (forceRefresh = false) => {
     try {
-      const sessionsData = await getActiveSessions();
+      const sessionsData = await getActiveSessions(forceRefresh);
       setActiveSessions(sessionsData);
     } catch (error) {
       showAlert("Error loading active sessions: " + error.message, "error");
     }
   };
 
-  const loadErrorLogs = async () => {
+  const loadErrorLogs = async (forceRefresh = false) => {
     try {
-      const logsData = await getErrorLogs();
+      const logsData = await getErrorLogs(forceRefresh);
       setErrorLogs(logsData);
     } catch (error) {
       showAlert("Error loading error logs: " + error.message, "error");
     }
   };
 
-  const loadTransactions = async () => {
+  const loadTransactions = async (forceRefresh = false) => {
     try {
-      const transactionsData = await getAllTransactions();
+      const transactionsData = await getAllTransactions(forceRefresh);
       setTransactions(transactionsData);
     } catch (error) {
       showAlert("Error loading transactions: " + error.message, "error");
@@ -311,7 +416,7 @@ export default function AdminSection({ isActive }) {
     if (!selectedCustomer || !points || parseInt(points) <= 0) {
       showAlert(
         "Please select a customer and enter valid points amount",
-        "error"
+        "error",
       );
       return;
     }
@@ -322,7 +427,8 @@ export default function AdminSection({ isActive }) {
     }
 
     try {
-      const customer = await getCustomer(selectedCustomer);
+      const customer =
+        customers[selectedCustomer] || (await getCustomer(selectedCustomer));
       if (!customer) {
         showAlert("Customer not found", "error");
         return;
@@ -342,22 +448,50 @@ export default function AdminSection({ isActive }) {
         newPoints -= pointsAmount;
       }
 
-      // Update customer points
-      await updateCustomerPoints(selectedCustomer, newPoints);
-
-      // Add transaction record
-      await addTransaction({
+      const transactionRecord = {
         customerUsername: selectedCustomer,
         points: pointsAmount,
         type: action,
         description: description.trim(),
         timestamp: new Date().toISOString(),
         adminUserId: user?.uid, // Track which admin made the change
+      };
+
+      const newTransactionId = await applyPointsAndTransaction(
+        selectedCustomer,
+        newPoints,
+        transactionRecord,
+      );
+
+      setCustomers((prev) => ({
+        ...prev,
+        [selectedCustomer]: {
+          ...prev[selectedCustomer],
+          points: newPoints,
+        },
+      }));
+
+      setTotalPoints(
+        (prev) => prev + (action === "add" ? pointsAmount : -pointsAmount),
+      );
+
+      setTransactions((prev) => {
+        if (!Object.keys(prev).length) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          [selectedCustomer]: {
+            ...(prev[selectedCustomer] || {}),
+            [newTransactionId]: transactionRecord,
+          },
+        };
       });
 
       showAlert(
         `Points ${action === "add" ? "added" : "redeemed"} successfully!`,
-        "success"
+        "success",
       );
 
       // Clear form
@@ -367,12 +501,16 @@ export default function AdminSection({ isActive }) {
       setSelectedCustomer("");
       setPlayerSearchTerm("");
 
-      // Reload admin data
-      await loadAdminData();
+      invalidateCache("customers", "transactions");
     } catch (error) {
       showAlert("Error updating points: " + error.message, "error");
     }
   };
+
+  initializeFirebaseAuthRef.current = initializeFirebaseAuth;
+  loadActiveSessionsRef.current = loadActiveSessions;
+  loadErrorLogsRef.current = loadErrorLogs;
+  loadTransactionsRef.current = loadTransactions;
 
   // Auto-populate description based on points value
   useEffect(() => {
@@ -406,19 +544,56 @@ export default function AdminSection({ isActive }) {
       console.log("Found saved login state, auto-logging in...");
       setIsAdminLoggedIn(true);
       setIsAuthLoading(true);
-      initializeFirebaseAuth();
+      initializeFirebaseAuthRef.current?.();
     } else {
       console.log("No saved login state found, showing login form");
     }
   }, []);
 
-  // Auto-refresh sessions every 30 seconds when user is authenticated
+  // Load heavier tabs only on demand to keep Firebase reads low.
   useEffect(() => {
-    if (user && !isAuthLoading && isAdminLoggedIn) {
-      const interval = setInterval(loadActiveSessions, 30000);
+    if (!user || isAuthLoading || !isAdminLoggedIn) {
+      return;
+    }
+
+    if (activeTab === "errors") {
+      loadErrorLogsRef.current?.();
+    }
+
+    if (activeTab === "transactions") {
+      loadTransactionsRef.current?.();
+    }
+
+    if (activeTab === "sessions") {
+      loadActiveSessionsRef.current?.();
+    }
+  }, [activeTab, user, isAuthLoading, isAdminLoggedIn]);
+
+  // Auto-refresh sessions every 2 minutes only when session visibility matters.
+  useEffect(() => {
+    if (
+      user &&
+      !isAuthLoading &&
+      isAdminLoggedIn &&
+      (activeTab === "sessions" || activeTab === "dashboard")
+    ) {
+      const interval = setInterval(() => {
+        if (!document.hidden) {
+          loadActiveSessionsRef.current?.(true);
+        }
+      }, 120000);
       return () => clearInterval(interval);
     }
-  }, [user, isAuthLoading, isAdminLoggedIn]);
+  }, [user, isAuthLoading, isAdminLoggedIn, activeTab]);
+
+  useEffect(() => {
+    return () => {
+      if (authUnsubscribeRef.current) {
+        authUnsubscribeRef.current();
+        authUnsubscribeRef.current = null;
+      }
+    };
+  }, []);
 
   // Filter customers based on search term
   const filteredCustomers = Object.values(customers).filter((customer) => {
@@ -439,7 +614,7 @@ export default function AdminSection({ isActive }) {
         customer.name.toLowerCase().includes(searchLower) ||
         customer.username.toLowerCase().includes(searchLower)
       );
-    }
+    },
   );
 
   // Filter active sessions
@@ -451,7 +626,7 @@ export default function AdminSection({ isActive }) {
         username.toLowerCase().includes(searchLower) ||
         (customer && customer.name.toLowerCase().includes(searchLower))
       );
-    }
+    },
   );
 
   // Get unique error types and severities for filters
@@ -887,13 +1062,34 @@ export default function AdminSection({ isActive }) {
               <>
                 <div className="section-header">
                   <h3>All Transactions</h3>
-                  <button className="btn btn-small" onClick={loadTransactions}>
+                  <button
+                    className="btn btn-small"
+                    onClick={() => loadTransactions(true)}
+                  >
                     Refresh
                   </button>
                 </div>
 
                 <div className="form-row">
-                  <div className="form-group">
+                  <div
+                    className="form-group search-box"
+                    style={{ paddingTop: 0, marginBottom: 0 }}
+                  >
+                    <label>Search Player</label>
+                    <span className="search-icon2">🔍</span>
+                    <input
+                      style={{ height: 46.59 }}
+                      type="text"
+                      className="form-input"
+                      value={transactionSearchTerm}
+                      onChange={(e) => setTransactionSearchTerm(e.target.value)}
+                      placeholder="Search by username, name, or description..."
+                    />
+                  </div>
+                  <div
+                    className="form-group"
+                    style={{ paddingTop: 0, marginBottom: 10 }}
+                  >
                     <label>Transaction Type</label>
                     <select
                       className="form-input form-select"
@@ -905,17 +1101,6 @@ export default function AdminSection({ isActive }) {
                       <option value="redeem">Redeem Points</option>
                     </select>
                   </div>
-                </div>
-
-                <div className="search-box" style={{ paddingTop: 15 }}>
-                  <span className="search-icon">🔍</span>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={transactionSearchTerm}
-                    onChange={(e) => setTransactionSearchTerm(e.target.value)}
-                    placeholder="Search by username, name, or description..."
-                  />
                 </div>
 
                 <div className="results-count">
@@ -986,7 +1171,7 @@ export default function AdminSection({ isActive }) {
                                 }}
                               >
                                 {new Date(
-                                  transaction.timestamp
+                                  transaction.timestamp,
                                 ).toLocaleString()}
                               </td>
                               <td style={{ padding: "12px 8px" }}>
@@ -1051,7 +1236,7 @@ export default function AdminSection({ isActive }) {
                   <h3>Active Sessions</h3>
                   <button
                     className="btn btn-small"
-                    onClick={loadActiveSessions}
+                    onClick={() => loadActiveSessions(true)}
                   >
                     Refresh
                   </button>
@@ -1100,7 +1285,7 @@ export default function AdminSection({ isActive }) {
                             <p>
                               💓 Last heartbeat:{" "}
                               {new Date(
-                                session.lastHeartbeat
+                                session.lastHeartbeat,
                               ).toLocaleTimeString()}
                             </p>
                           </div>
@@ -1118,7 +1303,7 @@ export default function AdminSection({ isActive }) {
                             onClick={() => {
                               if (
                                 confirm(
-                                  `Are you sure you want to stop the session for ${username}?`
+                                  `Are you sure you want to stop the session for ${username}?`,
                                 )
                               ) {
                                 stopSession(username);
@@ -1139,7 +1324,10 @@ export default function AdminSection({ isActive }) {
               <>
                 <div className="section-header">
                   <h3>Error Logs</h3>
-                  <button className="btn btn-small" onClick={loadErrorLogs}>
+                  <button
+                    className="btn btn-small"
+                    onClick={() => loadErrorLogs(true)}
+                  >
                     Refresh
                   </button>
                 </div>
@@ -1246,8 +1434,8 @@ export default function AdminSection({ isActive }) {
                             log.severity === "error"
                               ? "#e53e3e"
                               : log.severity === "warning"
-                              ? "#d69e2e"
-                              : "#38a169";
+                                ? "#d69e2e"
+                                : "#38a169";
 
                           return (
                             <tr
